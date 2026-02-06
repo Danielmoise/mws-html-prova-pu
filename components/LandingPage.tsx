@@ -432,28 +432,59 @@ const OrderPopup: React.FC<{ isOpen: boolean; onClose: () => void; content: Gene
         }
     }, [isOpen, content.insuranceConfig, content.gadgetConfig]);
 
+    /**
+     * GESTIONE FORM HTML CUSTOM:
+     * Intercetta il submit del form iniettato tramite HTML e avvia il processo di ordine completo.
+     */
     useEffect(() => {
         if (isOpen && content.formType === 'html' && customFormRef.current) {
-            const form = customFormRef.current.querySelector('form');
-            if (form) {
-                const handleCustomSubmit = (e: Event) => {
-                    e.preventDefault();
-                    
-                    const htmlFormData = new FormData(form);
-                    const extractedData: Record<string, string> = {};
-                    htmlFormData.forEach((value, key) => {
-                        extractedData[key] = value.toString();
-                    });
-
-                    setFormData(prev => ({ ...prev, ...extractedData }));
-                    finalizeOrder('cod', extractedData);
-                };
+            // Cerchiamo tutti i form all'interno del contenitore iniettato
+            const forms = customFormRef.current.querySelectorAll('form');
+            
+            const handleCustomSubmit = async (e: Event) => {
+                e.preventDefault();
+                setIsLoading(true); // Attiviamo lo stato di caricamento globale
                 
+                const form = e.target as HTMLFormElement;
+                const htmlFormData = new FormData(form);
+                const extractedData: Record<string, string> = {};
+                
+                htmlFormData.forEach((value, key) => {
+                    extractedData[key] = value.toString();
+                });
+
+                // Mappatura intelligente dei nomi dei campi per garantire la compatibilità con il redirect
+                // Molti script di affiliazione usano nomi diversi per i campi chiave
+                const finalData = {
+                    ...extractedData,
+                    name: extractedData.name || extractedData.nome || extractedData.nome_cognome || extractedData.full_name || extractedData.customer_name || '',
+                    phone: extractedData.phone || extractedData.telefono || extractedData.tel || extractedData.cellulare || extractedData.customer_phone || '',
+                    email: extractedData.email || extractedData.mail || extractedData.customer_email || '',
+                    address: extractedData.address || extractedData.indirizzo || extractedData.customer_address || '',
+                    city: extractedData.city || extractedData.citta || extractedData.customer_city || '',
+                    cap: extractedData.cap || extractedData.zip || extractedData.customer_zip || '',
+                    province: extractedData.province || extractedData.provincia || extractedData.pr || extractedData.customer_province || '',
+                    address_number: extractedData.address_number || extractedData.civico || extractedData.house_number || ''
+                };
+
+                setFormData(prev => ({ ...prev, ...finalData }));
+                
+                // Avviamo il processo di finalizzazione ordine (webhook, tracciamento, redirect)
+                // Passiamo 'cod' come default per i form custom, a meno che non sia specificato diversamente
+                await finalizeOrder('cod', finalData);
+            };
+            
+            forms.forEach(form => {
                 form.addEventListener('submit', handleCustomSubmit);
-                return () => form.removeEventListener('submit', handleCustomSubmit);
-            }
+            });
+
+            return () => {
+                forms.forEach(form => {
+                    form.removeEventListener('submit', handleCustomSubmit);
+                });
+            };
         }
-    }, [isOpen, content.formType]);
+    }, [isOpen, content.formType, content.customFormHtml]); // Ricarica se cambia l'HTML
 
     if (!isOpen) return null;
 
@@ -511,8 +542,9 @@ const OrderPopup: React.FC<{ isOpen: boolean; onClose: () => void; content: Gene
         const totalPrice = calculateTotal();
         const currentData = manualData || formData;
         
-        const currentName = currentData.name || currentData.nome || currentData.full_name || '';
-        const currentPhone = currentData.phone || currentData.telefono || currentData.tel || '';
+        // Mappatura sicura dei nomi dei campi per il payload finale e il redirect
+        const currentName = currentData.name || currentData.nome || currentData.full_name || currentData.nome_cognome || '';
+        const currentPhone = currentData.phone || currentData.telefono || currentData.tel || currentData.cellulare || '';
 
         const payloadData: Record<string, any> = {
             event_type: 'new_order',
@@ -536,7 +568,7 @@ const OrderPopup: React.FC<{ isOpen: boolean; onClose: () => void; content: Gene
             const webhookUrl = content.webhookUrl.trim();
             const bodyJSON = JSON.stringify(payloadData);
             
-            // FIX: Invio singolo per evitare dati doppi. Fetch con keepalive è preferibile a Beacon per consistenza payload.
+            // Invio singolo per evitare dati doppi. Fetch con keepalive per persistenza.
             fetch(webhookUrl, { 
                 method: 'POST', 
                 headers: { 'Content-Type': 'application/json' },
@@ -1050,7 +1082,6 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
     const [socialNotification, setSocialNotification] = useState<{visible: boolean, name: string, city: string} | null>(null);
     const spConfig = content.socialProofConfig || { enabled: true, intervalSeconds: 10, maxShows: 4 };
     
-    // FIX: Cambiato limite iniziale a 30 recensioni come richiesto
     const [visibleReviewsCount, setVisibleReviewsCount] = useState(30);
     const reviewsToShow = reviews.slice(0, visibleReviewsCount);
     const [activeReviewImage, setActiveReviewImage] = useState<string | null>(null);
@@ -1095,7 +1126,6 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
         return () => clearInterval(interval);
     }, [spConfig, content.stockConfig?.enabled, content.uiTranslation]);
 
-    // FIX: Aggiunta logica per gestire i video TikTok in MemoizedHTML
     useEffect(() => {
         const initVideos = () => {
             const videos = document.querySelectorAll<HTMLVideoElement>(".tiktok-videov8");
@@ -1106,7 +1136,6 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
                     const video = entry.target as HTMLVideoElement;
                     if (entry.isIntersecting) {
                         video.play().catch(() => {
-                            // Autoplay silenzioso fallito (comune su mobile/Safari se non mutato)
                             video.muted = true;
                             video.play().catch(() => {});
                         });
@@ -1123,11 +1152,11 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
                 } else {
                     video.pause();
                 }
-                video.muted = false; // Attiva l'audio alla prima interazione
+                video.muted = false;
             };
 
             videos.forEach(v => {
-                v.muted = true; // Obbligatorio per autoplay
+                v.muted = true;
                 v.setAttribute('playsinline', 'true');
                 v.setAttribute('webkit-playsinline', 'true');
                 observer.observe(v);
@@ -1142,7 +1171,6 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
             };
         };
 
-        // Piccolo delay per attendere il rendering del MemoizedHTML
         const timer = setTimeout(initVideos, 500);
         return () => clearTimeout(timer);
     }, [content.extraLandingHtml]);
@@ -1247,7 +1275,6 @@ const GadgetTemplate: React.FC<TemplateProps> = ({ content, onBuy, styles, siteC
                     </div>
                 ))}
             </div>
-            {/* FIX: Sostituito con logica "Mostra tutte le recensioni" se > 30 */}
             {reviews.length > visibleReviewsCount && (
                 <div className="mt-12 flex flex-col items-center justify-center gap-4">
                     <button 
